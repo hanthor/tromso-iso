@@ -1,0 +1,64 @@
+# Aurora Tromso live ISO installer image
+#
+# Build with:
+#   just container tromso
+#
+# Three-stage build:
+#   1. tromso-ref       — Aurora Tromso image (provides kernel modules)
+#   2. initramfs-builder — Debian: builds a dmsquash-live initramfs against
+#                          Tromso's kernel modules
+#   3. final            — Aurora Tromso: receives the rebuilt initramfs + live-env setup
+#
+# Aurora Tromso is KDE Plasma / freedesktop-sdk based — no package manager, no dracut.
+# The initramfs is built in a separate Debian stage so no cross-distro binary
+# grafting is needed; only the initramfs.img output crosses the stage boundary.
+# The ISO bootloader is systemd-boot (already in Tromso at
+# /usr/lib/systemd/boot/efi/systemd-bootx64.efi) — no GRUB2 or shim required.
+
+# ── Stage 1: Tromso reference (kernel modules source) ────────────────────────
+FROM localhost/tromso:latest AS tromso-ref
+
+# ── Stage 2: Debian — builds the dmsquash-live initramfs ─────────────────────
+FROM debian:sid AS initramfs-builder
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        dracut \
+        dmsetup \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tromso-ref /usr/lib/modules /usr/lib/modules
+
+RUN set -ex; \
+    kernel=$(ls /usr/lib/modules | sort -V | tail -1); \
+    echo "Building dmsquash-live initramfs for kernel ${kernel}"; \
+    DRACUT_NO_XATTR=1 dracut -v --force --zstd --reproducible --no-hostonly \
+        --add "dmsquash-live" \
+        --add-drivers "squashfs overlay loop iso9660 sr_mod cdrom" \
+        /tmp/initramfs.img "${kernel}"; \
+    ls -lh /tmp/initramfs.img
+
+# ── Stage 3: Final Aurora Tromso live image ───────────────────────────────────
+FROM localhost/tromso:latest
+
+ARG INSTALLER_CHANNEL=stable
+ENV INSTALLER_CHANNEL=${INSTALLER_CHANNEL}
+
+ARG DEBUG=0
+ENV DEBUG=${DEBUG}
+
+# Replace the OCI-mode initramfs with the dmsquash-live initramfs from stage 2
+COPY --from=initramfs-builder /tmp/initramfs.img /tmp/initramfs.img
+RUN kernel=$(ls /usr/lib/modules | sort -V | tail -1) && \
+    mv /tmp/initramfs.img "/usr/lib/modules/${kernel}/initramfs.img" && \
+    echo "Replaced initramfs for kernel ${kernel}"
+
+# ── Flatpak install layer ─────────────────────────────────────────────────────
+COPY src/flatpaks /tmp/flatpaks-list
+RUN --mount=type=bind,source=src,target=/src \
+    --mount=type=cache,target=/var/cache/flatpak-dl,id=tromso-flatpak \
+    /src/install-flatpaks.sh
+
+# ── Live-environment configure layer ─────────────────────────────────────────
+COPY src/ /tmp/src/
+RUN chmod +x /tmp/src/configure-live.sh && /tmp/src/configure-live.sh

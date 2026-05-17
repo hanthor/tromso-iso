@@ -1,0 +1,5 @@
+# Build outputs
+output/
+
+# Temp files
+*.log

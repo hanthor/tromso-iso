@@ -1,0 +1,43 @@
+{
+  "log_file": "/var/log/bootc-installer.log",
+  "distro_name": "Aurora",
+  "distro_logo": "resource:///org/bootcinstaller/Installer/images/aurora.png",
+  "imgref": "ghcr.io/hanthor/tromso:latest",
+  "local_imgref": "containers-storage:ghcr.io/hanthor/tromso:latest",
+  "bootloader": "systemd",
+  "composeFsBackend": true,
+  "tour": {
+    "welcome": {
+      "title": "Welcome to Aurora",
+      "description": "Aurora is KDE Plasma on a modern, immutable Linux base. Thanks for testing!"
+    },
+    "features": {
+      "title": "KDE Plasma Desktop",
+      "description": "Aurora ships KDE Plasma 6 on freedesktop-sdk with automatic daily updates via bootc."
+    },
+    "community": {
+      "title": "Getting Started",
+      "description": "After installation, Aurora updates automatically. Use Discover for Flatpak apps."
+    },
+    "completed": {
+      "title": "Ready to Install",
+      "description": "Select a disk to install Aurora. The process takes a few minutes."
+    }
+  },
+  "steps": {
+    "welcome": {
+      "template": "welcome",
+      "protected": true
+    },
+    "image": {
+      "template": "image",
+      "protected": true
+    },
+    "disk": {
+      "template": "disk"
+    },
+    "encryption": {
+      "template": "encryption"
+    }
+  }
+}

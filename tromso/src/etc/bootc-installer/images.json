@@ -1,0 +1,17 @@
+{
+  "default_image": "ghcr.io/hanthor/tromso:latest",
+  "fallback_flatpaks": [],
+  "images": [
+    {
+      "name": "Aurora",
+      "imgref": "ghcr.io/hanthor/tromso:latest",
+      "desc": "Aurora KDE Linux",
+      "icon": "resource:///org/bootcinstaller/Installer/images/aurora.png",
+      "bootloader": "systemd",
+      "filesystem": "ext4",
+      "composefs": false,
+      "needs_user_creation": false,
+      "flatpak_var_path": "state/os/default/var"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+# Aurora Tromso system flatpaks
+# Installed into the live squashfs at build time.
+# Copied offline to the target by tuna-installer during installation.
+#
+# Note: org.bootcinstaller.Installer is installed separately via the GitHub
+# Releases bundle (not on Flathub) in install-flatpaks.sh.
+#
+# Format: one app ID per line, resolved from the flathub remote.
+com.github.tchx84.Flatseal
+io.github.flattool.Warehouse
+io.missioncenter.MissionCenter
+org.kde.ark
+org.kde.gwenview
+org.kde.haruna
+org.kde.kcalc
+org.kde.kwrite
+org.kde.okular
+org.mozilla.firefox
