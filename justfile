@@ -3,6 +3,7 @@ workdir := output_dir
 debug := "0"
 installer_channel := "stable"
 compression := "fast"
+luks-passphrase := "testpassphrase"
 
 # Create an XFS loopback mount at /mnt for faster VFS import.
 # Idempotent: skips if /mnt is already an XFS mount.
@@ -182,3 +183,137 @@ iso-sd-boot target:
         bash "{{target}}/src/build-iso.sh" "${BOOT_TAR}" "${SQUASHFS}" "${OUTPUT_DIR}/{{target}}-live.iso"
 
     echo "ISO ready: ${OUTPUT_DIR}/{{target}}-live.iso"
+
+# Boot a built ISO in QEMU via UEFI with serial console output on stdout.
+# Exit: Ctrl-A then X
+boot-iso-serial target:
+    #!/usr/bin/bash
+    set -euo pipefail
+    QEMU=$(command -v /usr/libexec/qemu-kvm /usr/bin/qemu-kvm /usr/bin/qemu-system-x86_64 2>/dev/null | head -1)
+    [[ -z "$QEMU" ]] && { echo "qemu-kvm not found" >&2; exit 1; }
+    ISO=$(ls {{output_dir}}/{{target}}-live.iso 2>/dev/null | head -1 || true)
+    [[ -z "$ISO" ]] && { echo "No ISO — run: just iso-sd-boot {{target}}" >&2; exit 1; }
+    OVMF_CODE=""; for f in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd; do [[ -f "$f" ]] && { OVMF_CODE="$f"; break; }; done
+    OVMF_VARS=$(mktemp /tmp/OVMF_VARS.XXXXXX.fd)
+    for f in /usr/share/OVMF/OVMF_VARS.fd /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do [[ -f "$f" ]] && { cp "$f" "${OVMF_VARS}"; break; }; done
+    [[ -z "$OVMF_CODE" ]] && { echo "OVMF not found" >&2; exit 1; }
+    trap "rm -f ${OVMF_VARS}" EXIT
+    echo "Booting ${ISO} — serial console (Ctrl-A X to quit)"
+    sudo "$QEMU" -machine q35 -m 4096 -accel kvm -cpu host -smp 4 \
+        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+        -drive if=pflash,format=raw,file="${OVMF_VARS}" \
+        -drive if=none,id=live-disk,file="${ISO}",media=cdrom,format=raw,readonly=on \
+        -device virtio-scsi-pci,id=scsi -device scsi-cd,drive=live-disk \
+        -net nic,model=virtio -net user,hostfwd=tcp::2222-:22 \
+        -serial mon:stdio -display none -no-reboot
+
+# Boot ISO with VNC display (vncviewer 127.0.0.1:5910) and serial on telnet 4445.
+boot-iso-vnc target:
+    #!/usr/bin/bash
+    set -euo pipefail
+    QEMU=$(command -v /usr/libexec/qemu-kvm /usr/bin/qemu-kvm /usr/bin/qemu-system-x86_64 2>/dev/null | head -1)
+    [[ -z "$QEMU" ]] && { echo "qemu-kvm not found" >&2; exit 1; }
+    ISO=$(ls {{output_dir}}/{{target}}-live.iso 2>/dev/null | head -1 || true)
+    [[ -z "$ISO" ]] && { echo "No ISO — run: just iso-sd-boot {{target}}" >&2; exit 1; }
+    OVMF_CODE=""; for f in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd; do [[ -f "$f" ]] && { OVMF_CODE="$f"; break; }; done
+    OVMF_VARS=$(mktemp /tmp/OVMF_VARS.XXXXXX.fd)
+    for f in /usr/share/OVMF/OVMF_VARS.fd /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do [[ -f "$f" ]] && { cp "$f" "${OVMF_VARS}"; break; }; done
+    [[ -z "$OVMF_CODE" ]] && { echo "OVMF not found" >&2; exit 1; }
+    trap "rm -f ${OVMF_VARS}" EXIT
+    echo "Booting ${ISO}  VNC: vncviewer 127.0.0.1:5910  Serial: telnet 127.0.0.1 4445"
+    sudo "$QEMU" -machine q35 -cpu host -m 4096 -smp 4 -accel kvm \
+        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+        -drive if=pflash,format=raw,file="${OVMF_VARS}" \
+        -drive if=none,id=live-disk,file="${ISO}",media=cdrom,format=raw,readonly=on \
+        -device virtio-scsi-pci,id=scsi -device scsi-cd,drive=live-disk \
+        -device virtio-vga -display vnc=127.0.0.1:10 \
+        -device virtio-net-pci,netdev=net0 \
+        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
+        -serial telnet:127.0.0.1:4445,server,nowait -no-reboot
+
+# Boot ISO with a writable install disk at /dev/vda for fisherman testing.
+# Creates output/<target>-install.qcow2 if it doesn't exist.
+boot-iso-install target:
+    #!/usr/bin/bash
+    set -euo pipefail
+    QEMU=$(command -v /usr/libexec/qemu-kvm /usr/bin/qemu-kvm /usr/bin/qemu-system-x86_64 2>/dev/null | head -1)
+    [[ -z "$QEMU" ]] && { echo "qemu-kvm not found" >&2; exit 1; }
+    ISO=$(ls {{output_dir}}/{{target}}-live.iso 2>/dev/null | head -1 || true)
+    [[ -z "$ISO" ]] && { echo "No ISO — run: just debug=1 iso-sd-boot {{target}}" >&2; exit 1; }
+    DISK="{{output_dir}}/{{target}}-install.qcow2"
+    [[ ! -f "$DISK" ]] && { echo "Creating install disk: ${DISK}"; qemu-img create -f qcow2 "${DISK}" 30G; }
+    OVMF_CODE=""; for f in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd; do [[ -f "$f" ]] && { OVMF_CODE="$f"; break; }; done
+    OVMF_VARS=$(mktemp /tmp/OVMF_VARS.XXXXXX.fd)
+    for f in /usr/share/OVMF/OVMF_VARS.fd /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do [[ -f "$f" ]] && { cp "$f" "${OVMF_VARS}"; break; }; done
+    [[ -z "$OVMF_CODE" ]] && { echo "OVMF not found" >&2; exit 1; }
+    trap "rm -f ${OVMF_VARS}" EXIT
+    echo "Booting ${ISO} with install disk ${DISK}"
+    echo "  VNC:  vncviewer 127.0.0.1:5910  Serial: telnet 127.0.0.1 4445"
+    echo "  SSH:  ssh -p 2222 liveuser@127.0.0.1  (password: live, debug=1 only)"
+    sudo "$QEMU" -machine q35 -cpu host -m 12288 -smp 4 -accel kvm \
+        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+        -drive if=pflash,format=raw,file="${OVMF_VARS}" \
+        -drive if=none,id=live-disk,file="${ISO}",media=cdrom,format=raw,readonly=on \
+        -device virtio-scsi-pci,id=scsi -device scsi-cd,drive=live-disk \
+        -drive if=none,id=install-disk,file="${DISK}",format=qcow2 \
+        -device virtio-blk-pci,drive=install-disk \
+        -device virtio-vga -display vnc=127.0.0.1:10 \
+        -device virtio-net-pci,netdev=net0 \
+        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
+        -serial telnet:127.0.0.1:4445,server,nowait -no-reboot
+
+# SSH into a running boot-iso-install VM and run fisherman to install to /dev/vda.
+# Requires: just debug=1 boot-iso-install <target>  running in another terminal.
+# Uses composeFsBackend=true so no bootupd needed and no scratch disk required.
+install target:
+    #!/usr/bin/bash
+    set -euo pipefail
+    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o IdentitiesOnly=yes -o PreferredAuthentications=password"
+    SSH_LIVE="sshpass -p live ssh $SSH_OPTS -p 2222 liveuser@127.0.0.1"
+    SSH_ROOT="sshpass -p root ssh $SSH_OPTS -p 2222 root@127.0.0.1"
+    SCP_LIVE="sshpass -p live scp $SSH_OPTS -P 2222"
+    PAYLOAD_REF="$(cat '{{target}}/payload_ref' 2>/dev/null | tr -d '[:space:]' || echo "localhost/{{target}}:latest")"
+    echo "Waiting for SSH..."
+    for i in $(seq 1 40); do $SSH_LIVE true 2>/dev/null && break; sleep 5; echo "  attempt ${i}/40..."; done
+    $SSH_LIVE true || { echo "ERROR: SSH timed out"; exit 1; }
+    echo "SSH ready."
+    RECIPE=$(mktemp /tmp/install-XXXXXX.json)
+    trap "rm -f '${RECIPE}'" EXIT
+    printf '{"disk":"/dev/vda","filesystem":"xfs","image":"containers-storage:%s","composeFsBackend":true,"bootloader":"systemd","hostname":"aurora","flatpaks":[]}\n' "${PAYLOAD_REF}" > "${RECIPE}"
+    $SCP_LIVE "${RECIPE}" liveuser@127.0.0.1:/tmp/install-recipe.json
+    echo "Uploaded recipe. Running fisherman..."
+    $SSH_ROOT '
+        FISHERMAN=$(ls /var/lib/flatpak/app/org.bootcinstaller.Installer/x86_64/master/active/files/bin/fisherman \
+                       /var/lib/flatpak/app/org.bootcinstaller.Installer.Devel/x86_64/master/active/files/bin/fisherman \
+                    2>/dev/null | head -1)
+        [[ -z "$FISHERMAN" ]] && { echo "fisherman not found"; exit 1; }
+        "$FISHERMAN" /tmp/install-recipe.json
+    '
+    echo "Install finished."
+
+# Like 'install' but with LUKS encryption.
+luks-install target:
+    #!/usr/bin/bash
+    set -euo pipefail
+    SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o IdentitiesOnly=yes -o PreferredAuthentications=password"
+    SSH_LIVE="sshpass -p live ssh $SSH_OPTS -p 2222 liveuser@127.0.0.1"
+    SSH_ROOT="sshpass -p root ssh $SSH_OPTS -p 2222 root@127.0.0.1"
+    SCP_LIVE="sshpass -p live scp $SSH_OPTS -P 2222"
+    PAYLOAD_REF="$(cat '{{target}}/payload_ref' 2>/dev/null | tr -d '[:space:]' || echo "localhost/{{target}}:latest")"
+    PASSPHRASE="{{luks-passphrase}}"
+    echo "Waiting for SSH..."
+    for i in $(seq 1 40); do $SSH_LIVE true 2>/dev/null && break; sleep 5; echo "  attempt ${i}/40..."; done
+    $SSH_LIVE true || { echo "ERROR: SSH timed out"; exit 1; }
+    RECIPE=$(mktemp /tmp/luks-XXXXXX.json)
+    trap "rm -f '${RECIPE}'" EXIT
+    printf '{"disk":"/dev/vda","filesystem":"xfs","image":"containers-storage:%s","composeFsBackend":true,"bootloader":"systemd","hostname":"aurora","encryption":{"type":"luks-passphrase","passphrase":"%s"},"flatpaks":[]}\n' "${PAYLOAD_REF}" "${PASSPHRASE}" > "${RECIPE}"
+    $SCP_LIVE "${RECIPE}" liveuser@127.0.0.1:/tmp/luks-recipe.json
+    echo "Running fisherman with LUKS..."
+    $SSH_ROOT '
+        FISHERMAN=$(ls /var/lib/flatpak/app/org.bootcinstaller.Installer/x86_64/master/active/files/bin/fisherman \
+                       /var/lib/flatpak/app/org.bootcinstaller.Installer.Devel/x86_64/master/active/files/bin/fisherman \
+                    2>/dev/null | head -1)
+        [[ -z "$FISHERMAN" ]] && { echo "fisherman not found"; exit 1; }
+        "$FISHERMAN" /tmp/luks-recipe.json
+    '
+    echo "LUKS install finished. Passphrase: ${PASSPHRASE}"
