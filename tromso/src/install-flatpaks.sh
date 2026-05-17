@@ -34,21 +34,21 @@ fi
 flatpak remote-add --system --if-not-exists flathub \
     https://dl.flathub.org/repo/flathub.flatpakrepo
 
-# bootc-installer bundle
+# bootc-installer bundle (KDE variant)
 # INSTALLER_CHANNEL controls which release tag to pull from:
 #   stable (default) → continuous   (latest stable build from main/prod)
 #   dev              → continuous-dev (latest dev build, tracks dev branch)
 RELEASE_TAG="continuous"
-FLATPAK_FILENAME="org.bootcinstaller.Installer.flatpak"
+FLATPAK_FILENAME="org.kdeinstaller.Installer.flatpak"
 if [[ "${INSTALLER_CHANNEL:-stable}" == "dev" ]]; then
     RELEASE_TAG="continuous-dev"
-    FLATPAK_FILENAME="org.bootcinstaller.Installer.Devel.flatpak"
+    FLATPAK_FILENAME="org.kdeinstaller.Installer.Devel.flatpak"
 fi
 curl --retry 3 --location \
     "https://github.com/tuna-os/tuna-installer/releases/download/${RELEASE_TAG}/${FLATPAK_FILENAME}" \
     -o /tmp/tuna-installer.flatpak
-INSTALLER_APP_ID="org.bootcinstaller.Installer"
-[[ "${INSTALLER_CHANNEL:-stable}" == "dev" ]] && INSTALLER_APP_ID="org.bootcinstaller.Installer.Devel"
+INSTALLER_APP_ID="org.kdeinstaller.Installer"
+[[ "${INSTALLER_CHANNEL:-stable}" == "dev" ]] && INSTALLER_APP_ID="org.kdeinstaller.Installer.Devel"
 
 flatpak install --system --noninteractive --bundle /tmp/tuna-installer.flatpak || \
     flatpak update --system --noninteractive "${INSTALLER_APP_ID}"
