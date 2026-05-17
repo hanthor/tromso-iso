@@ -196,8 +196,8 @@ touch /etc/bootc-installer/live-iso-mode
 
 # ── Installer autostart ───────────────────────────────────────────────────────
 # XDG autostart works on KDE Plasma; the installer launches automatically.
-INSTALLER_APP_ID="org.bootcinstaller.Installer"
-[[ "${INSTALLER_CHANNEL:-stable}" == "dev" ]] && INSTALLER_APP_ID="org.bootcinstaller.Installer.Devel"
+INSTALLER_APP_ID="org.kdeinstaller.Installer"
+[[ "${INSTALLER_CHANNEL:-stable}" == "dev" ]] && INSTALLER_APP_ID="org.kdeinstaller.Installer.Devel"
 
 mkdir -p /etc/xdg/autostart
 cat > /etc/xdg/autostart/tuna-installer.desktop << DTEOF
@@ -230,7 +230,7 @@ if [ -n "$INSTALLER_APP_DIR" ]; then
 fi
 
 mkdir -p /usr/share/polkit-1/actions
-cat > /usr/share/polkit-1/actions/org.bootcinstaller.Installer.policy << 'POLICYEOF'
+cat > /usr/share/polkit-1/actions/org.kdeinstaller.Installer.policy << 'POLICYEOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC
   "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
