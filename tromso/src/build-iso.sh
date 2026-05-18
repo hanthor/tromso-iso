@@ -81,7 +81,7 @@ EOF
 # Kernel cmdline for dmsquash-live live boot:
 #   root=live:CDLABEL=...       dmsquash-live: find the ISO by volume label
 #   rd.live.image               enable dmsquash-live mode
-#   rd.live.overlay.overlayfs=1 use overlayfs (not device mapper) for the rw layer
+#   rd.overlay=tmpfs:{size=Xm}  overlayfs rw layer on a tmpfs (size=8192m ≈ 8 GiB)
 #   enforcing=0                 disable SELinux enforcement (GNOME OS ships it)
 #   console=ttyS0,115200n8      serial output on amd64 (16550/QEMU q35) — validation target
 #   console=ttyAMA0,115200n8    serial output on arm64 (PL011/QEMU virt) — validation target; listed
@@ -91,7 +91,7 @@ cat > "${ESP_STAGING}/loader/entries/tromso-live.conf" << EOF
 title   Tromso Live
 linux   /images/pxeboot/vmlinuz
 initrd  /images/pxeboot/initrd.img
-options root=live:CDLABEL=${LABEL} rd.live.image rd.live.overlay.overlayfs=1 enforcing=0 quiet console=ttyS0,115200n8 console=ttyAMA0,115200n8
+options root=live:CDLABEL=${LABEL} rd.live.image rd.live.overlay.overlayfs=1 rd.live.overlay.size=8192 enforcing=0 quiet console=ttyS0,115200n8 console=ttyAMA0,115200n8
 EOF
 # ── Create the FAT ESP image ──────────────────────────────────────────────────
 # Size = kernel + initramfs + EFI binary + loader files + 32 MiB headroom

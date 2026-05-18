@@ -52,12 +52,15 @@ _payload_ref_flag target:
     @if [ -f "{{target}}/payload_ref" ]; then echo "--bootc-installer-payload-ref $(cat '{{target}}/payload_ref' | tr -d '[:space:]')"; fi
 
 container target:
-    @test -f "{{target}}/payload_ref" || { echo "ERROR: {{target}}/payload_ref not found"; exit 1; }
+    #!/usr/bin/bash
+    set -euo pipefail
+    test -f "{{target}}/payload_ref" || { echo "ERROR: {{target}}/payload_ref not found"; exit 1; }
+    BASE_IMAGE=$(cat {{target}}/payload_ref | tr -d '[:space:]')
     podman build --cap-add sys_admin --security-opt label=disable \
         --layers \
         --build-arg DEBUG={{debug}} \
         --build-arg INSTALLER_CHANNEL={{installer_channel}} \
-        --build-arg BASE_IMAGE=$(cat {{target}}/payload_ref | tr -d '[:space:]') \
+        --build-arg BASE_IMAGE="${BASE_IMAGE}" \
         -t {{target}}-installer -f ./{{target}}/Containerfile ./{{target}}
 
 iso-builder target:
@@ -94,74 +97,77 @@ iso-sd-boot target:
 
     if [[ $(id -u) -eq 0 ]]; then
         _ns()    { bash -c "$1"; }
+        _ns_rm() { rm -rf "$@"; }
     else
         _ns()    { podman unshare bash -c "$1"; }
+        _ns_rm() { podman unshare rm -rf "$@"; }
     fi
 
     SQUASHFS="${OUTPUT_DIR}/{{target}}-rootfs.sfs"
     BOOT_TAR="${OUTPUT_DIR}/{{target}}-boot-files.tar"
     CS_STAGING="${WORKDIR}/{{target}}-cs-staging"
     SQUASHFS_ROOT="${WORKDIR}/{{target}}-sfs-root"
-    trap "rm -f '${SQUASHFS}' '${BOOT_TAR}' '${OUTPUT_DIR}/{{target}}-payload.oci.tar' 2>/dev/null || true" EXIT
+    trap "rm -f '${SQUASHFS}' '${BOOT_TAR}' '${OUTPUT_DIR}/{{target}}-payload.oci.tar'; _ns_rm '${CS_STAGING}' '${SQUASHFS_ROOT}' 2>/dev/null || true" EXIT
 
     _ns "
         set -euo pipefail
-
-        SQUASHFS_ROOT='${SQUASHFS_ROOT}'
-        CS_STAGING='${CS_STAGING}'
-        OVERLAY_UPPER=\$(mktemp -d \"\${SQUASHFS_ROOT}_upper_XXXXXX\")
-        OVERLAY_WORK=\$(mktemp -d \"\${SQUASHFS_ROOT}_work_XXXXXX\")
-
-        ns_cleanup() {
-            umount \"\${SQUASHFS_ROOT}/var/lib/containers/storage\" 2>/dev/null || true
-            umount \"\${SQUASHFS_ROOT}\"                            2>/dev/null || true
-            podman image unmount localhost/{{target}}-installer     2>/dev/null || true
-            rm -rf \"\${OVERLAY_UPPER}\" \"\${OVERLAY_WORK}\"       2>/dev/null || true
-            rm -rf \"\${CS_STAGING}\" \"\${SQUASHFS_ROOT}\"         2>/dev/null || true
-        }
-        trap ns_cleanup EXIT
-
         MOUNT=\$(podman image mount localhost/{{target}}-installer)
         PATH=/usr/sbin:/usr/bin:/home/linuxbrew/.linuxbrew/bin:\$PATH
 
+        # Populate containers-storage in a staging dir on WORKDIR (large scratch space).
+        # Two-step skopeo copy decouples source and destination storage configs.
         PAYLOAD_OCI='${OUTPUT_DIR}/{{target}}-payload.oci.tar'
+        CS_STAGING='${CS_STAGING}'
+        SQUASHFS_ROOT='${SQUASHFS_ROOT}'
         SQUASHFS_STORAGE=\"\${CS_STAGING}/var/lib/containers/storage\"
+        # Storage conf for skopeo running inside the installer container.
+        # Paths are container-relative: /vfs-storage is the bind-mounted SQUASHFS_STORAGE.
         STORAGE_CONF=\"\$(mktemp '${OUTPUT_DIR}'/live-storage-XXXXXX.conf)\"
         mkdir -p \"\${SQUASHFS_STORAGE}\"
         printf '[storage]\ndriver = \"vfs\"\nrunroot = \"/tmp/cs-runroot\"\ngraphroot = \"/vfs-storage\"\n' \
             > \"\${STORAGE_CONF}\"
 
-        echo 'Exporting OCI image to archive...'
-        skopeo copy containers-storage:'"${PAYLOAD_IMAGE}"' oci-archive:\${PAYLOAD_OCI}:'"${PAYLOAD_IMAGE}"'
-        podman rmi '"${PAYLOAD_IMAGE}"' || true
+        echo 'Exporting Tromso OCI image to archive...'
+        # Force gzip compression so fisherman's composefs backend receives
+        # application/vnd.oci.image.layer.v1.tar+gzip layers as required.
+        skopeo copy --dest-compress-format gzip --dest-force-compress-format \
+            containers-storage:'${PAYLOAD_IMAGE}' \
+            oci-archive:\${PAYLOAD_OCI}:'${PAYLOAD_IMAGE}'
 
         echo 'Importing Tromso OCI image into squashfs containers-storage...'
+        # Run skopeo from inside the installer image so the VFS tar-split metadata is
+        # written in a format the live ISO can read.  The build host links a newer
+        # containers/storage that emits a binary tar-split format; the installer image
+        # carries the same containers/storage version as the live ISO and writes the
+        # JSON-based format it expects.
         podman run --rm \
             --privileged \
             -v \"\${PAYLOAD_OCI}:/payload.oci.tar:ro\" \
             -v \"\${SQUASHFS_STORAGE}:/vfs-storage\" \
             -v \"\${STORAGE_CONF}:/tmp/st.conf:ro\" \
             localhost/{{target}}-installer \
-            sh -c 'mkdir -p /tmp/cs-runroot /var/tmp && CONTAINERS_STORAGE_CONF=/tmp/st.conf skopeo copy oci-archive:/payload.oci.tar:'"${PAYLOAD_IMAGE}"' containers-storage:'"${PAYLOAD_IMAGE}"''
+            sh -c 'mkdir -p /tmp/cs-runroot /var/tmp && CONTAINERS_STORAGE_CONF=/tmp/st.conf skopeo copy oci-archive:/payload.oci.tar:'${PAYLOAD_IMAGE}' containers-storage:'${PAYLOAD_IMAGE}''
 
         rm -f \"\${PAYLOAD_OCI}\" \"\${STORAGE_CONF}\"
 
-        echo 'Building unified squashfs source tree using bind mounts...'
+        # mksquashfs adds each source directory as a named subdirectory — it does
+        # NOT union-merge multiple sources into root. To get the VFS storage at
+        # /var/lib/containers/storage/ in the squashfs (not at /tromso-cs-staging/...),
+        # we build a single unified source tree using XFS reflinks (instant, ~zero space).
+        echo 'Building unified squashfs source tree...'
         mkdir -p \"\${SQUASHFS_ROOT}\"
-
-        FS_TYPE=\$(findmnt -n -o FSTYPE -T \"\${SQUASHFS_ROOT}\" 2>/dev/null || echo \"unknown\")
-        if [[ \"\${FS_TYPE}\" == \"xfs\" || \"\${FS_TYPE}\" == \"ext4\" ]]; then
-            if ! mount -t overlay overlay \
-                -o lowerdir=\"\${MOUNT}\",upperdir=\"\${OVERLAY_UPPER}\",workdir=\"\${OVERLAY_WORK}\" \"\${SQUASHFS_ROOT}\"; then
-                cp -a \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\"
-            fi
-        else
+        cp -a --reflink=auto \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\" 2>/dev/null || \
             cp -a \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\"
-        fi
-
+        # Merge VFS storage into the correct path within the unified source tree.
         mkdir -p \"\${SQUASHFS_ROOT}/var/lib/containers/storage\"
-        mount --bind \"\${CS_STAGING}/var/lib/containers/storage\" \"\${SQUASHFS_ROOT}/var/lib/containers/storage\"
+        cp -a \"\${CS_STAGING}/var/lib/containers/storage/.\" \
+            \"\${SQUASHFS_ROOT}/var/lib/containers/storage/\"
+        rm -rf \"\${CS_STAGING}\"
 
+        # Build squashfs from the unified source tree.
+        # dedup removes blocks shared between live rootfs and OCI layers (same base image).
+        # -processors 4: caps parallelism to avoid OOM (32 workers exhausts RAM).
+        # Compression preset: fast=zstd/3/128K (quick), release=zstd/15/1M (~20% smaller)
         SFS_LEVEL=3; SFS_BLOCK=131072
         [[ '{{compression}}' == 'release' ]] && { SFS_LEVEL=15; SFS_BLOCK=1048576; }
         mksquashfs \"\${SQUASHFS_ROOT}\" '${SQUASHFS}' \
@@ -169,10 +175,15 @@ iso-sd-boot target:
             -processors 4 \
             -e proc -e sys -e dev -e run -e tmp
 
+        # Clean up staging dirs inside unshare — vfs files are owned by sub-uids
+        # and cannot be removed by the real user outside the user namespace.
+        rm -rf \"\${SQUASHFS_ROOT}\"
+
         tar -C \"\$MOUNT\" \
             -cf '${BOOT_TAR}' \
             ./usr/lib/modules \
             ./usr/lib/systemd/boot/efi
+        podman image unmount localhost/{{target}}-installer
     "
 
     echo "=== Disk space after squashfs, before ISO assembly ==="
@@ -250,7 +261,7 @@ boot-iso-install target:
     echo "Booting ${ISO} with install disk ${DISK}"
     echo "  VNC:  vncviewer 127.0.0.1:5910  Serial: telnet 127.0.0.1 4445"
     echo "  SSH:  ssh -p 2222 liveuser@127.0.0.1  (password: live, debug=1 only)"
-    sudo "$QEMU" -machine q35 -cpu host -m 12288 -smp 4 -accel kvm \
+    sudo "$QEMU" -machine q35 -cpu host -m 8192 -smp 4 -accel kvm \
         -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
         -drive if=pflash,format=raw,file="${OVMF_VARS}" \
         -drive if=none,id=live-disk,file="${ISO}",media=cdrom,format=raw,readonly=on \
@@ -261,6 +272,32 @@ boot-iso-install target:
         -device virtio-net-pci,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
         -serial telnet:127.0.0.1:4445,server,nowait -no-reboot
+
+# Boot an already-installed disk image directly (no ISO) with serial on stdin/stdout.
+# Useful for debugging the installed system after manual or fisherman install.
+# Usage: just boot-installed tromso
+boot-installed target:
+    #!/usr/bin/bash
+    set -euo pipefail
+    QEMU=$(command -v /usr/libexec/qemu-kvm /usr/bin/qemu-kvm /usr/bin/qemu-system-x86_64 2>/dev/null | head -1)
+    [[ -z "$QEMU" ]] && { echo "qemu-kvm not found" >&2; exit 1; }
+    DISK="{{output_dir}}/{{target}}-install.qcow2"
+    [[ ! -f "$DISK" ]] && { echo "No install disk: ${DISK}" >&2; exit 1; }
+    OVMF_CODE=""; for f in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd; do [[ -f "$f" ]] && { OVMF_CODE="$f"; break; }; done
+    OVMF_VARS=$(mktemp /tmp/OVMF_VARS.XXXXXX.fd)
+    for f in /usr/share/OVMF/OVMF_VARS.fd /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do [[ -f "$f" ]] && { cp "$f" "${OVMF_VARS}"; break; }; done
+    [[ -z "$OVMF_CODE" ]] && { echo "OVMF not found" >&2; exit 1; }
+    trap "rm -f ${OVMF_VARS}" EXIT
+    echo "Booting installed disk: ${DISK}"
+    echo "  Serial console (Ctrl-A X to quit QEMU)"
+    echo "  SSH: ssh -p 2222 root@127.0.0.1  (password: root)"
+    sudo "$QEMU" -machine q35 -cpu host -m 8192 -smp 4 -accel kvm \
+        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+        -drive if=pflash,format=raw,file="${OVMF_VARS}" \
+        -drive if=none,id=disk0,file="${DISK}",format=qcow2 \
+        -device virtio-blk-pci,drive=disk0 \
+        -net nic,model=virtio -net user,hostfwd=tcp::2222-:22 \
+        -serial mon:stdio -display none -no-reboot
 
 # SSH into a running boot-iso-install VM and run fisherman to install to /dev/vda.
 # Requires: just debug=1 boot-iso-install <target>  running in another terminal.
