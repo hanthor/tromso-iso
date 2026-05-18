@@ -49,6 +49,7 @@ if [[ "${DEBUG:-0}" == "1" ]]; then
 PermitEmptyPasswords no
 PasswordAuthentication yes
 PermitRootLogin yes
+PerSourcePenalties no
 SSHEOF
     # Remove options not supported by this OpenSSH build (prevents sshd startup failure).
     sed -i '/GSSAPIAuthentication/d' /etc/ssh/sshd_config
@@ -181,12 +182,16 @@ StandardOutput=tty
 TTYPath=/dev/ttyS0
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=display-manager.service
 LREOF
 systemctl enable live-ready.service
 
 # fisherman (tuna-installer backend) creates /var/fisherman-tmp
 mkdir -p /var/fisherman-tmp
+
+# ── Installer tour images ─────────────────────────────────────────────────────
+mkdir -p /usr/share/bootc-installer/images
+install -Dm644 "$SCRIPT_DIR/images/tromso-welcome.png" /usr/share/bootc-installer/images/tromso-welcome.png
 
 # ── Installer configuration ───────────────────────────────────────────────────
 mkdir -p /etc/bootc-installer
@@ -196,25 +201,30 @@ touch /etc/bootc-installer/live-iso-mode
 
 # ── Installer autostart ───────────────────────────────────────────────────────
 # XDG autostart works on KDE Plasma; the installer launches automatically.
+# VANILLA_CUSTOM_RECIPE workaround (tuna-os/tuna-installer#26): inside the
+# Flatpak sandbox /etc is reserved; the host /etc is at /run/host/etc.  Pass
+# the recipe via env var at the /run/host path so the installer finds it.
 INSTALLER_APP_ID="org.bootcinstaller.Installer"
 [[ "${INSTALLER_CHANNEL:-stable}" == "dev" ]] && INSTALLER_APP_ID="org.bootcinstaller.Installer.Devel"
 
 mkdir -p /etc/xdg/autostart
 cat > /etc/xdg/autostart/tuna-installer.desktop << DTEOF
 [Desktop Entry]
-Name=Tromso Installer
+Name=Aurora Installer
 Exec=flatpak run --env=VANILLA_CUSTOM_RECIPE=/run/host/etc/bootc-installer/recipe.json ${INSTALLER_APP_ID}
 Icon=tromso
 Type=Application
 X-KDE-autostart-phase=2
 DTEOF
 
-# Application entry for the KDE task switcher / taskbar
+# A matching entry in /usr/share/applications/ lets KDE reference this
+# app in the taskbar. The autostart file auto-launches it; this entry
+# makes it visible and pinnable as 'aurora-installer.desktop'.
 mkdir -p /usr/share/applications
-cat > /usr/share/applications/tromso-installer.desktop << DTEOF
+cat > /usr/share/applications/aurora-installer.desktop << DTEOF
 [Desktop Entry]
-Name=Tromso Installer
-Comment=Install Tromso KDE Linux to your computer
+Name=Aurora Installer
+Comment=Install Aurora KDE Linux to your computer
 Exec=flatpak run --env=VANILLA_CUSTOM_RECIPE=/run/host/etc/bootc-installer/recipe.json ${INSTALLER_APP_ID}
 Icon=tromso
 Type=Application
@@ -263,6 +273,8 @@ polkit.addRule(function(action, subject) {
 EOF
 
 # ── VFS containers-storage ────────────────────────────────────────────────────
+# The squashfs is read-only; nested overlayfs is unsupported.  VFS matches
+# the /etc/containers/storage.conf we write into the installed image layer.
 cat > /etc/containers/storage.conf << 'STOREOF'
 [storage]
 driver = "vfs"
