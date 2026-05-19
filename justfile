@@ -156,8 +156,13 @@ iso-sd-boot target:
         # we build a single unified source tree using XFS reflinks (instant, ~zero space).
         echo 'Building unified squashfs source tree...'
         mkdir -p \"\${SQUASHFS_ROOT}\"
-        cp -a --reflink=auto \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\" 2>/dev/null || \
-            cp -a \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\"
+        # Use podman export | tar instead of cp -a from the overlay MOUNT.
+        # fuse-overlayfs on CI runners with CONFIG_OVERLAY_FS_REDIRECT_DIR can
+        # return ENOENT on files that appear in readdir() (overlay redirect artifacts).
+        # podman export reads layers sequentially and produces a clean flat tar.
+        EXPORT_CONT=\$(podman create localhost/{{target}}-installer /bin/true)
+        podman export \"\${EXPORT_CONT}\" | tar -C \"\${SQUASHFS_ROOT}\" -xp
+        podman rm \"\${EXPORT_CONT}\"
         # Merge VFS storage into the correct path within the unified source tree.
         mkdir -p \"\${SQUASHFS_ROOT}/var/lib/containers/storage\"
         cp -a \"\${CS_STAGING}/var/lib/containers/storage/.\" \
