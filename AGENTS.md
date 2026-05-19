@@ -33,9 +33,9 @@ and are never installed to disk.
 
 1. Build the live container image with `podman build` (3-stage Containerfile).
 2. Export the **base payload image** (not the live image) to an OCI-archive with
-   `skopeo copy`.  Use `--dest-compress-format gzip --dest-force-compress-format`
-   to ensure gzip layers (fisherman hardcodes zstd, bootc composefs requires gzip;
-   pre-compressing with gzip avoids a recompression deadlock).
+   `skopeo copy`.  The tromso image is built with `gzip: gzip` in the .bst file so
+   layers are already gzip-compressed; no extra skopeo flags are needed (matching
+   dakota-iso's plain copy).
 3. Import the OCI-archive into VFS containers-storage **inside the live container**
    (via `podman run`) so that tar-split metadata is in the format the live ISO's
    containers-storage version expects.
@@ -71,7 +71,7 @@ match dakota.
 | Screen lock config | dconf | kscreenlockerrc |
 | Power management | dconf | powermanagementprofilesrc |
 | DRM device access | not needed | `usermod -aG video,render liveuser` |
-| skopeo compress | (no flag) | `--dest-compress-format gzip --dest-force-compress-format` |
+| skopeo compress | (no flag) | (no flag) — image is pre-gzip from .bst |
 | sshd_config fixes | (none) | Remove `PerSourcePenalties`, `GSSAPIAuthentication` (not in freedesktop-sdk OpenSSH) |
 | sudo setuid | (not needed) | `chmod u+s /usr/bin/sudo` (BST strips setuid bits) |
 

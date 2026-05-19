@@ -128,9 +128,9 @@ iso-sd-boot target:
             > \"\${STORAGE_CONF}\"
 
         echo 'Exporting Tromso OCI image to archive...'
-        # Force gzip compression so fisherman's composefs backend receives
-        # application/vnd.oci.image.layer.v1.tar+gzip layers as required.
-        skopeo copy --dest-compress-format gzip --dest-force-compress-format \
+        # The tromso image is already gzip-compressed (gzip: gzip in .bst).
+        # No --dest-compress-format needed; matching dakota-iso plain copy.
+        skopeo copy \
             containers-storage:'${PAYLOAD_IMAGE}' \
             oci-archive:\${PAYLOAD_OCI}:'${PAYLOAD_IMAGE}'
 
