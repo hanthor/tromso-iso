@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      packages: read
+      packages: write
 
     steps:
       - name: Checkout
@@ -197,40 +197,66 @@ jobs:
           path: screenshot.png
           if-no-files-found: warn
 
+      - name: Push ISO to GHCR via ORAS
+        if: github.event_name != 'pull_request'
+        run: |
+          ISO="${{ steps.iso.outputs.path }}"
+          DATED="${{ steps.iso.outputs.dated }}"
+          TAG="${{ steps.iso.outputs.tag }}"
+
+          # Install oras
+          ORAS_VER=$(curl -fsSL https://api.github.com/repos/oras-project/oras/releases/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))")
+          curl -fsSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VER}/oras_${ORAS_VER}_linux_amd64.tar.gz"
+          tar xzf oras_*.tar.gz oras
+
+          echo "${{ secrets.GITHUB_TOKEN }}" | ./oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          # Push ISO + checksum as a versioned tag and also update :latest
+          ./oras push "ghcr.io/hanthor/tromso-iso/installer:${TAG}" \
+            --artifact-type "application/vnd.aurora.iso.v1" \
+            "${ISO}:application/octet-stream" \
+            "output/${DATED}-CHECKSUM:text/plain"
+          ./oras tag "ghcr.io/hanthor/tromso-iso/installer:${TAG}" latest
+
       - name: Publish GitHub Release
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ISO="${{ steps.iso.outputs.path }}"
           DATED="${{ steps.iso.outputs.dated }}"
           TAG="${{ steps.iso.outputs.tag }}"
           DATE=$(date -u +%Y-%m-%d)
 
           cat > /tmp/release-notes.md << NOTESEOF
-          Automated Tromso KDE Linux live ISO build.
+          Aurora KDE Linux live ISO — automated build from \`${{ github.sha }}\` on ${DATE}.
 
-          Built from commit \`${{ github.sha }}\` on ${DATE}.
+          ## Download ISO (>2 GB — hosted on GHCR)
+
+          Install [oras](https://oras.land), then:
+          \`\`\`bash
+          oras pull ghcr.io/hanthor/tromso-iso/installer:${TAG}
+          # or latest:
+          oras pull ghcr.io/hanthor/tromso-iso/installer:latest
+          \`\`\`
 
           ## Installation
           1. Write the ISO to a USB drive with [Impression](https://flathub.org/apps/io.gitlab.adhami3310.Impression) or \`dd\`
           2. Boot from USB
-          3. Run the **Tromso Installer** from the taskbar
+          3. Run the **Aurora Installer** from the taskbar
           4. Select your disk and install
 
-          ## Verification
+          ## Verify
           \`\`\`
           sha256sum -c ${DATED}-CHECKSUM
           \`\`\`
           NOTESEOF
 
           gh release create "${TAG}" \
-            --title "Tromso Live ISO ${DATE}" \
+            --title "Aurora KDE Linux ISO ${DATE}" \
             --notes-file /tmp/release-notes.md \
             --latest \
-            "${ISO}#${DATED}" \
             "output/${DATED}-CHECKSUM#${DATED}-CHECKSUM" || \
           gh release upload "${TAG}" \
-            "${ISO}#${DATED}" \
             "output/${DATED}-CHECKSUM#${DATED}-CHECKSUM" \
             --clobber
